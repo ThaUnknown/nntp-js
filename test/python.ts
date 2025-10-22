@@ -10,6 +10,7 @@ const caps = await s.getcapabilities()
 if ('STARTTLS' in caps) {
   await s.starttls()
 }
+console.log({ caps })
 
 const { count, first, last, group } = await s.group('gmane.comp.python.general')
 console.log('Group', group, 'has', count, 'articles, range', first, 'to', last)

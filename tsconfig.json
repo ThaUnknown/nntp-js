@@ -6,9 +6,13 @@
     "customConditions": [
       "module"
     ],
+    "outDir": "./dist",
+    "rewriteRelativeImportExtensions": true,
     "allowImportingTsExtensions": true,
-    "noEmit": true,
+    "noEmit": false,
     "noImplicitAny": true,
     "strict": true,
-  },
+    "checkJs": true,
+    "sourceMap": true
+  }
 }

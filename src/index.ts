@@ -237,7 +237,7 @@ export class NNTP extends EventEmitter {
     this._putline(messageSpec ? `ARTICLE ${messageSpec}` : 'ARTICLE')
     const resp = decode(await this._getresp())
     const headers = parseHeaders(decode(await this._getline(HEADERS_END)).split('\r\n'))
-    const data = await this._getline(LONGRESP_END)
+    const data = await this._getline(LONGRESP_END) as Uint8Array<ArrayBuffer>
 
     return { resp, res: new Response(data, { headers }) }
   }
