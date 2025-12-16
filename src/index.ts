@@ -1,37 +1,65 @@
+import { EventEmitter } from 'events'
 import net from 'node:net'
 import tls from 'node:tls'
-import { EventEmitter } from 'events'
-import { formatDate, parseDateString, parseHeaders, parseOverview, parseOverviewFmt } from './helpers.ts'
-import { NNTPDataError, NNTPPermanentError, NNTPProtocolError, NNTPReplyError, NNTPTemporaryError } from './exceptions.ts'
-import { LONGRESP_END, DEFAULT_OVERVIEW_FMT, NEW_LINE, HEADERS_END } from './constants.ts'
 
-async function * findByteSequence (sourceIterator: AsyncIterable<Uint8Array>, targetSequence: Uint8Array) {
-  // not great but good enough
-  const buffer = []
-  let targetLength = targetSequence.length
+import { LONGRESP_END, DEFAULT_OVERVIEW_FMT, NEW_LINE, HEADERS_END } from './constants.ts'
+import { NNTPDataError, NNTPPermanentError, NNTPProtocolError, NNTPReplyError, NNTPTemporaryError } from './exceptions.ts'
+import { formatDate, parseDateString, parseHeaders, parseOverview, parseOverviewFmt } from './helpers.ts'
+
+const concat = (chunks: Buffer[], size = 0) => {
+  const length = chunks.length || 0
+
+  const b = Buffer.allocUnsafe(size)
+  let offset = size
+  let i = length
+  while (i--) {
+    offset -= chunks[i].length
+    b.set(chunks[i], offset)
+  }
+
+  return b
+}
+
+async function * findByteSequence (sourceIterator: AsyncIterable<Buffer>, targetSequence: Uint8Array) {
+  const chunks: Buffer[] = []
+  let totalLen = 0
   let matchIndex = 0
 
   for await (const chunk of sourceIterator) {
-    for (const byte of chunk) {
-      buffer.push(byte)
-      if (byte === targetSequence[matchIndex]) {
+    let chunkStart = 0
+
+    for (let i = 0; i < chunk.length; i++) {
+      if (chunk[i] === targetSequence[matchIndex]) {
         matchIndex++
-        if (matchIndex === targetLength) {
-          // Sequence found, yield all data up to but not including the sequence
-          if (buffer.length > 0) {
-            targetSequence = yield new Uint8Array(buffer.slice(0, -targetLength)) || targetSequence
+        if (matchIndex === targetSequence.length) {
+          const endPos = i + 1 - targetSequence.length
+          if (endPos > chunkStart || totalLen > 0) {
+            if (endPos > chunkStart) {
+              chunks.push(chunk.subarray(chunkStart, endPos))
+              totalLen += endPos - chunkStart
+            }
+            if (totalLen > 0) {
+              targetSequence = yield concat(chunks, totalLen) || targetSequence
+            }
+            chunks.length = 0
+            totalLen = 0
           }
-          buffer.length = 0 // Clear the buffer
+          chunkStart = i + 1
           matchIndex = 0
-          targetLength = targetSequence.length
         }
-      } else {
-        matchIndex = (byte === targetSequence[0]) ? 1 : 0
+      } else if (matchIndex > 0) {
+        // Partial match failed - check if current byte starts a new match
+        matchIndex = chunk[i] === targetSequence[0] ? 1 : 0
       }
+    }
+
+    if (chunkStart < chunk.length) {
+      chunks.push(chunk.subarray(chunkStart))
+      totalLen += chunk.length - chunkStart
     }
   }
 
-  if (buffer.length > 0) yield new Uint8Array(buffer)
+  if (totalLen > 0) yield concat(chunks, totalLen)
 }
 
 const decoder = new TextDecoder('ascii')
@@ -51,7 +79,7 @@ export class NNTP extends EventEmitter {
   nntpVersion?: number
   nntpImplementation?: string
   _cachedoverviewfmt?: string[]
-  byteReader?: AsyncGenerator<Uint8Array, void, Uint8Array>
+  byteReader?: AsyncGenerator<Buffer, void, Uint8Array>
   connected = false
 
   constructor (host: string, port = 119, readermode = false, timeout?: number) {
@@ -62,14 +90,14 @@ export class NNTP extends EventEmitter {
 
   async connect (readermode = false, timeout: number | undefined = undefined, socket?: net.Socket) {
     try {
-      this.sock = socket || this._createSocket(timeout)
+      this.sock = socket ?? this._createSocket(timeout)
       this.byteReader = findByteSequence(this.sock, NEW_LINE) // initialize with new line since first requet is always a welcome single line
       this.welcome = decode(await this._getresp())
       this.caps = undefined
       this.connected = true
       await this.getcapabilities()
       this.readermodeAfterauth = false
-      if (readermode && !this.caps!?.READER) {
+      if (readermode && !this.caps?.READER) {
         await this._setreadermode()
         if (!this.readermodeAfterauth) {
           this.caps = undefined
@@ -131,7 +159,7 @@ export class NNTP extends EventEmitter {
   }
 
   getwelcome (): string {
-    return this.welcome as string
+    return this.welcome!
   }
 
   async getcapabilities () {
@@ -328,7 +356,7 @@ export class NNTP extends EventEmitter {
     }
     this.caps = undefined
     await this.getcapabilities()
-    if (this.readermodeAfterauth && !this.caps!?.READER) {
+    if (this.readermodeAfterauth && !this.caps?.READER) {
       await this._setreadermode()
       this.caps = undefined
       await this.getcapabilities()

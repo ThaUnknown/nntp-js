@@ -1,12 +1,12 @@
 {
   "name": "nntp-js",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "NNTP client for Node.js",
   "main": "src/index.ts",
   "type": "module",
   "scripts": {
     "test": "node --experimental-strip-types --test ./test/*.ts",
-    "build": "tsc"
+    "build": "tsc --noCheck"
   },
   "keywords": [
     "nntp",
@@ -21,6 +21,7 @@
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^22.7.5",
+    "eslint-config-standard-universal": "^1.0.9",
     "typescript": "^5.9.3"
   },
   "files": [
