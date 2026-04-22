@@ -4,6 +4,7 @@ export class NNTPError extends Error {
   constructor (...args: string[]) {
     super(...args)
     this.name = 'NNTPError'
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
     this.response = args[0] || 'No response given'
   }
 }

@@ -10,7 +10,7 @@ export const DEFAULT_OVERVIEW_FMT = [
 ]
 
 // Alternative names allowed in LIST OVERVIEW.FMT response
-export const OVERVIEW_FMT_ALTERNATIVES: { [key: string]: string } = {
+export const OVERVIEW_FMT_ALTERNATIVES: Record<string, string> = {
   bytes: ':bytes',
   lines: ':lines'
 }

@@ -23,7 +23,7 @@ function cut (s: string, lim: number): string {
 }
 
 const firstArticle = (Number(last) | 0) - 10 + 1
-const { overviews } = await s.xover(firstArticle, last)
+const { overviews } = await s.xover(firstArticle, last!)
 
 for (const [artnum, over] of overviews) {
   const author = over.from.split('<', 1)[0]

@@ -1,18 +1,12 @@
 {
+  "extends": "eslint-config-standard-universal/tsconfig.json",
   "compilerOptions": {
-    "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
     "customConditions": [
       "module"
     ],
     "outDir": "./dist",
-    "rewriteRelativeImportExtensions": true,
-    "allowImportingTsExtensions": true,
-    "noEmit": false,
-    "noImplicitAny": true,
-    "strict": true,
-    "checkJs": true,
-    "sourceMap": true
+    "types": [
+      "node"
+    ]
   }
 }

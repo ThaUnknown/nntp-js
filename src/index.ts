@@ -13,8 +13,8 @@ const concat = (chunks: Buffer[], size = 0) => {
   let offset = size
   let i = length
   while (i--) {
-    offset -= chunks[i].length
-    b.set(chunks[i], offset)
+    offset -= chunks[i]!.length
+    b.set(chunks[i]!, offset)
   }
 
   return b
@@ -62,9 +62,16 @@ async function * findByteSequence (sourceIterator: AsyncIterable<Buffer>, target
   if (totalLen > 0) yield concat(chunks, totalLen)
 }
 
-const decoder = new TextDecoder('ascii')
+const decoder = new TextDecoder('utf-8')
 function decode (data: Uint8Array) {
   return decoder.decode(data)
+}
+
+type NNTPCapabilities = Record<string, string[]> & {
+  READER?: string[]
+  OVER?: string[]
+  VERSION?: string[]
+  IMPLEMENTATION?: string[]
 }
 
 export class NNTP extends EventEmitter {
@@ -72,7 +79,7 @@ export class NNTP extends EventEmitter {
   port
   sock?: net.Socket
   welcome?: string
-  caps?: Record<string, string[]>
+  caps?: NNTPCapabilities
   readermodeAfterauth?: boolean
   tlsOn = false
   authenticated = false
@@ -97,7 +104,7 @@ export class NNTP extends EventEmitter {
       this.connected = true
       await this.getcapabilities()
       this.readermodeAfterauth = false
-      if (readermode && !this.caps?.READER) {
+      if (readermode && !this.caps!.READER) {
         await this._setreadermode()
         if (!this.readermodeAfterauth) {
           this.caps = undefined
@@ -183,11 +190,11 @@ export class NNTP extends EventEmitter {
   }
 
   async capabilities () {
-    const caps: Record<string, string[]> = {}
+    const caps: NNTPCapabilities = {}
     const { resp, data } = await this._longcmd('CAPABILITIES')
     for (const line of decode(data).split('\r\n')) {
       const [name, ...tokens] = line.split(' ')
-      caps[name] = tokens
+      caps[name!] = tokens
     }
     return { resp, caps }
   }
@@ -274,7 +281,7 @@ export class NNTP extends EventEmitter {
     return this._shortcmd('SLAVE')
   }
 
-  async xhdr (hdr: string, str: any) {
+  async xhdr (hdr: string, str: string) {
     const { resp, data } = await this._longcmd(`XHDR ${hdr} ${str}`)
     return {
       resp,
@@ -312,7 +319,7 @@ export class NNTP extends EventEmitter {
     if (elem.length !== 2) {
       throw new NNTPDataError(resp)
     }
-    const date = elem[1]
+    const date = elem[1]!
     if (date.length !== 14) {
       throw new NNTPDataError(resp)
     }
@@ -323,7 +330,7 @@ export class NNTP extends EventEmitter {
     return this._post('POST', data)
   }
 
-  ihave (messageId: any, data: Iterable<Buffer>) {
+  ihave (messageId: string, data: Iterable<Buffer>) {
     return this._post(`IHAVE ${messageId}`, data)
   }
 
@@ -356,7 +363,7 @@ export class NNTP extends EventEmitter {
     }
     this.caps = undefined
     await this.getcapabilities()
-    if (this.readermodeAfterauth && !this.caps?.READER) {
+    if (this.readermodeAfterauth && !this.caps!.READER) {
       await this._setreadermode()
       this.caps = undefined
       await this.getcapabilities()
@@ -384,7 +391,7 @@ export class NNTP extends EventEmitter {
       throw new NNTPReplyError(resp)
     }
     const words = resp.split(' ')
-    const artNum = parseInt(words[1])
+    const artNum = parseInt(words[1]!)
     const messageId = words[2]
     return { resp, artNum, messageId }
   }
@@ -425,7 +432,7 @@ export class NNTP extends EventEmitter {
           const match = linePat.exec(rawLine.trim())
           if (match) {
             const [, name, desc] = match
-            groups[name] = desc
+            groups[name!] = desc!
           }
         }
         return [resp, groups]
@@ -439,15 +446,15 @@ export class NNTP extends EventEmitter {
           const match = linePat.exec(rawLine.trim())
           if (match) {
             const [, name, desc] = match
-            groups[name] = desc
+            groups[name!] = desc!
           }
         }
         return [resp, groups]
       } else {
-        const match = linePat.exec(lines[0].trim())
+        const match = linePat.exec(lines[0]!.trim())
         if (match) {
           const [, , desc] = match
-          return desc
+          return desc!
         }
         return ''
       }

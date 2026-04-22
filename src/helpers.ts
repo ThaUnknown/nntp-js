@@ -25,7 +25,7 @@ export function formatDate (inputDate: Date, format: string) {
     ss: () => padZero(inputDate.getSeconds())
   }
 
-  return format.replace(/yyyy|MM|dd|HH|hh|mm|ss/g, (match) => parts[match]())
+  return format.replace(/yyyy|MM|dd|HH|hh|mm|ss/g, (match) => parts[match]!())
 }
 
 export function parseDateString (dateStr: string) {
@@ -37,9 +37,9 @@ export function parseDateString (dateStr: string) {
 
 export function parseOverviewFmt (lines: string[]): string[] {
   const fmt = lines.map((line) => {
-    const name = (line[0] === ':' ? line.split(':', 2)[1] : line.split(':', 1)[0]).toLowerCase()
+    const name = (line[0] === ':' ? line.split(':', 2)[1] : line.split(':', 1)[0])?.toLowerCase()
 
-    return OVERVIEW_FMT_ALTERNATIVES[name] || name
+    return OVERVIEW_FMT_ALTERNATIVES[name!] ?? name!
   })
 
   if (fmt.length < DEFAULT_OVERVIEW_FMT.length) throw new NNTPDataError('LIST OVERVIEW.FMT response too short')
@@ -48,27 +48,27 @@ export function parseOverviewFmt (lines: string[]): string[] {
   return fmt
 }
 
-export function parseOverview (lines: string[], fmt: string[]): [number, { [key: string]: any }][] {
+export function parseOverview (lines: string[], fmt: string[]): Array<[number, Record<string, any>]> {
   const nDefaults = DEFAULT_OVERVIEW_FMT.length
-  const overview: [number, { [key: string]: any }][] = []
+  const overview: Array<[number, Record<string, any>]> = []
   for (const line of lines) {
-    const fields: { [key: string]: any } = {}
+    const fields: Record<string, any> = {}
     const [articleNumberStr, ...tokens] = line.split('\t')
-    const articleNumber = parseInt(articleNumberStr, 10)
+    const articleNumber = parseInt(articleNumberStr!, 10)
     for (let i = 0; i < tokens.length; i++) {
       if (i >= fmt.length) {
         continue
       }
-      const fieldName = fmt[i]
+      const fieldName = fmt[i]!
       const isMetadata = fieldName.startsWith(':')
       if (i >= nDefaults && !isMetadata) {
         const h = fieldName + ': '
-        if (tokens[i] && tokens[i].toLowerCase().slice(0, h.length) !== h) {
+        if (tokens[i] && tokens[i]!.toLowerCase().slice(0, h.length) !== h) {
           throw new NNTPDataError("OVER/XOVER response doesn't include names of additional headers")
         }
-        if (tokens[i]) tokens[i] = tokens[i].slice(h.length)
+        if (tokens[i]) tokens[i] = tokens[i]!.slice(h.length)
       }
-      fields[fmt[i]] = tokens[i]
+      fields[fmt[i]!] = tokens[i]
     }
     overview.push([articleNumber, fields])
   }
