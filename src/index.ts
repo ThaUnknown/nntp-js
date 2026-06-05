@@ -1,4 +1,4 @@
-import { EventEmitter } from 'events'
+import { once, EventEmitter } from 'node:events'
 import net from 'node:net'
 import tls from 'node:tls'
 
@@ -86,18 +86,54 @@ export class NNTP extends EventEmitter {
   nntpVersion?: number
   nntpImplementation?: string
   _cachedoverviewfmt?: string[]
-  byteReader?: AsyncGenerator<Buffer, void, Uint8Array>
+  byteReader?: AsyncGenerator<Buffer<ArrayBuffer>, void, Uint8Array>
   connected = false
 
-  constructor (host: string, port = 119, readermode = false, timeout?: number) {
+  _connectReadermode = false
+  _connectTimeout?: number
+  _tlsContext?: tls.SecureContext
+  _loginUser?: string
+  _loginPassword?: string
+
+  constructor (host: string, port = 119) {
     super()
     this.host = host
     this.port = port
   }
 
+  _attachSocketListeners () {
+    this.sock!.once('close', () => {
+      this.connected = false
+      this.emit('close')
+    })
+    this.sock!.once('error', () => {
+      this.connected = false
+    })
+  }
+
+  async _ensureConnected () {
+    if (this.connected) return
+
+    const needsTls = this.tlsOn
+    const needsAuth = this.authenticated
+
+    this.authenticated = false
+    this.readermodeAfterauth = false
+    this.tlsOn = false
+    this.sock?.destroy()
+
+    await this.connect(this._connectReadermode, this._connectTimeout)
+    if (needsTls) await this.starttls(this._tlsContext)
+    if (needsAuth && this._loginUser) await this.login(this._loginUser, this._loginPassword)
+  }
+
   async connect (readermode = false, timeout: number | undefined = undefined, socket?: net.Socket) {
     try {
+      this._connectReadermode = readermode
+      this._connectTimeout = timeout ?? this._connectTimeout
+
       this.sock = socket ?? this._createSocket(timeout)
+      this._attachSocketListeners()
       this.byteReader = findByteSequence(this.sock, NEW_LINE) // initialize with new line since first requet is always a welcome single line
       this.welcome = decode(await this._getresp())
       this.caps = undefined
@@ -117,8 +153,10 @@ export class NNTP extends EventEmitter {
     }
   }
 
-  connectTLS (readermode = false, timeout?: number, context?: tls.SecureContext) {
-    return this.connect(readermode, 0, new tls.TLSSocket(this._createSocket(timeout), { secureContext: context }))
+  async connectTLS (readermode = false, timeout?: number, context?: tls.SecureContext) {
+    await this.connect(readermode, timeout, new tls.TLSSocket(this._createSocket(timeout), { secureContext: context }))
+    this.tlsOn = true
+    this._tlsContext = context
   }
 
   _createSocket (timeout?: number) {
@@ -146,19 +184,19 @@ export class NNTP extends EventEmitter {
     return value
   }
 
-  _putline (line: string) {
-    if (!this.connected) throw new Error('Not connected')
+  async _putline (line: string) {
+    await this._ensureConnected()
     this.sock!.write(line + '\r\n')
   }
 
-  _shortcmd (line: string) {
-    this._putline(line)
-    return this._getresp()
+  async _shortcmd (line: string) {
+    await this._putline(line)
+    return await this._getresp()
   }
 
-  _longcmd (line: string) {
-    this._putline(line)
-    return this._getlongresp()
+  async _longcmd (line: string) {
+    await this._putline(line)
+    return await this._getlongresp()
   }
 
   async _getlongresp () {
@@ -269,7 +307,7 @@ export class NNTP extends EventEmitter {
 
   /** get article head and body  */
   async article (messageSpec?: string | number) {
-    this._putline(messageSpec ? `ARTICLE ${messageSpec}` : 'ARTICLE')
+    await this._putline(messageSpec ? `ARTICLE ${messageSpec}` : 'ARTICLE')
     const resp = decode(await this._getresp())
     const headers = parseHeaders(decode(await this._getline(HEADERS_END)).split('\r\n'))
     const data = await this._getline(LONGRESP_END) as Uint8Array<ArrayBuffer>
@@ -342,13 +380,16 @@ export class NNTP extends EventEmitter {
     }
   }
 
-  async login (user: string | null = null, password: string | null = null) {
+  async login (user: string, password?: string) {
     if (this.authenticated) {
       throw new Error('Already logged in.')
     }
     if (!user) {
       throw new Error('`user` must be specified')
     }
+
+    this._loginUser = user
+    this._loginPassword = password
 
     const resp = decode(await this._shortcmd(`authinfo user ${user}`))
     if (resp.startsWith('381')) {
@@ -361,6 +402,7 @@ export class NNTP extends EventEmitter {
         }
       }
     }
+    this.authenticated = true
     this.caps = undefined
     await this.getcapabilities()
     if (this.readermodeAfterauth && !this.caps!.READER) {
@@ -383,6 +425,7 @@ export class NNTP extends EventEmitter {
   }
 
   _close () {
+    this.connected = false
     this.sock!.end()
   }
 
@@ -477,25 +520,27 @@ export class NNTP extends EventEmitter {
   }
 
   async starttls (secureContext?: tls.SecureContext) {
-    if (this.tlsOn) {
-      throw new Error('TLS is already enabled.')
-    }
+    if (this.tlsOn) return
     if (this.authenticated) {
       throw new Error('TLS cannot be started after authentication.')
     }
     const resp = decode(await this._shortcmd('STARTTLS'))
-    if (resp.startsWith('382')) {
-      this.connected = false
-      await new Promise<void>(resolve => {
-        this.sock = tls.connect(5000, this.host, { socket: this.sock, secureContext }, resolve)
-        this.byteReader = findByteSequence(this.sock, NEW_LINE)
-      })
-      this.connected = true
-      this.tlsOn = true
-      this.caps = undefined
-      await this.getcapabilities()
-    } else {
+    if (!resp.startsWith('382')) {
       throw new Error('TLS failed to start.')
     }
+
+    this.connected = false
+    this._tlsContext = secureContext
+
+    this.sock = tls.connect(this._connectTimeout ?? 5000, this.host, { socket: this.sock, secureContext })
+    this._attachSocketListeners()
+    this.byteReader = findByteSequence(this.sock, NEW_LINE)
+
+    await once(this.sock, 'secureConnect')
+
+    this.connected = true
+    this.tlsOn = true
+    this.caps = undefined
+    await this.getcapabilities()
   }
 }

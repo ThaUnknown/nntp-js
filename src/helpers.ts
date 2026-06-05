@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { DEFAULT_OVERVIEW_FMT, OVERVIEW_FMT_ALTERNATIVES } from './constants.ts'
 import { NNTPDataError } from './exceptions.ts'
 

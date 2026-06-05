@@ -1,6 +1,6 @@
 {
   "name": "nntp-js",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "NNTP client for Node.js",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
@@ -21,9 +21,12 @@
   "author": "ThaUnknown",
   "license": "ISC",
   "devDependencies": {
-    "@types/node": "^22.7.5",
-    "eslint-config-standard-universal": "^1.0.9",
-    "typescript": "^5.9.3"
+    "@types/node": "^25.9.1",
+    "eslint": "9.17.0",
+    "eslint-config-standard-universal": "^1.0.10",
+    "globals": "17.6.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "8.59.3"
   },
   "files": [
     "!test/",
