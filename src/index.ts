@@ -5,7 +5,7 @@ import tls from 'node:tls'
 import { DEFAULT_OVERVIEW_FMT, HEADERS_END } from './constants.ts'
 import { NNTPDataError, NNTPPermanentError, NNTPProtocolError, NNTPReplyError, NNTPTemporaryError } from './exceptions.ts'
 import { formatDate, parseDateString, parseHeaders, parseOverview, parseOverviewFmt } from './helpers.ts'
-import { ResponseReader } from './reader.ts'
+import { ConnectionClosedError, ResponseReader } from './reader.ts'
 
 export * from './exceptions.ts'
 export { ConnectionClosedError, ResponseReader } from './reader.ts'
@@ -42,6 +42,11 @@ export class NNTP extends EventEmitter {
   _tlsContext?: tls.SecureContext
   _loginUser?: string
   _loginPassword?: string
+
+  /** Settles when the reply of the last `BODY` command is read. */
+  _lastBodyReply: Promise<void> = Promise.resolve()
+  /** The reconnect that `BODY` commands wait for. */
+  _reconnect?: Promise<void>
 
   constructor (host: string, port = 119) {
     super()
@@ -252,9 +257,41 @@ export class NNTP extends EventEmitter {
     return { resp, headers: parseHeaders(decode(data).split('\r\n')) }
   }
 
-  /** get article body  */
+  /**
+   * get article body
+   *
+   * More than 1 call can run at the same time (RFC 3977 pipelining). Each call sends its command at once.
+   * The server sends the replies in the order of the commands, so each call reads its reply after the calls before it.
+   * Do not call a different command while a call runs.
+   */
   async body (messageSpec?: string | number) {
-    return await this._artcmd(messageSpec ? `BODY ${messageSpec}` : 'BODY')
+    // The handshake must be alone on the socket. So all calls wait for 1 reconnect, and the reconnect waits for the replies on the old socket.
+    if (!this.connected || this._reconnect) {
+      this._reconnect ??= this._reconnectAfterBodyReplies()
+      await this._reconnect
+    }
+
+    this.sock!.write((messageSpec ? `BODY ${messageSpec}` : 'BODY') + '\r\n')
+    const previous = this._lastBodyReply
+    const { promise, resolve }: PromiseWithResolvers<void> = Promise.withResolvers()
+    this._lastBodyReply = promise
+    try {
+      await previous
+      // After a failed read, the position in the byte stream is unknown, so the reply of this command is lost.
+      if (!this.connected) throw new ConnectionClosedError()
+      return await this._getartresp()
+    } finally {
+      resolve()
+    }
+  }
+
+  async _reconnectAfterBodyReplies () {
+    try {
+      await this._lastBodyReply
+      await this._ensureConnected()
+    } finally {
+      this._reconnect = undefined
+    }
   }
 
   /** get article head and body  */
@@ -407,7 +444,12 @@ export class NNTP extends EventEmitter {
   }
 
   async _artcmd (line: string) {
-    const { resp, data } = await this._longcmd(line)
+    await this._putline(line)
+    return await this._getartresp()
+  }
+
+  async _getartresp () {
+    const { resp, data } = await this._getlongresp()
     const { artNum, messageId } = this._statparse(resp)
     return { resp, artNum, messageId, data }
   }
