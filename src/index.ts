@@ -2,65 +2,13 @@ import { once, EventEmitter } from 'node:events'
 import net from 'node:net'
 import tls from 'node:tls'
 
-import { LONGRESP_END, DEFAULT_OVERVIEW_FMT, NEW_LINE, HEADERS_END } from './constants.ts'
+import { DEFAULT_OVERVIEW_FMT, HEADERS_END } from './constants.ts'
 import { NNTPDataError, NNTPPermanentError, NNTPProtocolError, NNTPReplyError, NNTPTemporaryError } from './exceptions.ts'
 import { formatDate, parseDateString, parseHeaders, parseOverview, parseOverviewFmt } from './helpers.ts'
+import { ResponseReader } from './reader.ts'
 
-const concat = (chunks: Buffer[], size = 0) => {
-  const length = chunks.length || 0
-
-  const b = Buffer.allocUnsafe(size)
-  let offset = size
-  let i = length
-  while (i--) {
-    offset -= chunks[i]!.length
-    b.set(chunks[i]!, offset)
-  }
-
-  return b
-}
-
-async function * findByteSequence (sourceIterator: AsyncIterable<Buffer>, targetSequence: Uint8Array) {
-  const chunks: Buffer[] = []
-  let totalLen = 0
-  let matchIndex = 0
-
-  for await (const chunk of sourceIterator) {
-    let chunkStart = 0
-
-    for (let i = 0; i < chunk.length; i++) {
-      if (chunk[i] === targetSequence[matchIndex]) {
-        matchIndex++
-        if (matchIndex === targetSequence.length) {
-          const endPos = i + 1 - targetSequence.length
-          if (endPos > chunkStart || totalLen > 0) {
-            if (endPos > chunkStart) {
-              chunks.push(chunk.subarray(chunkStart, endPos))
-              totalLen += endPos - chunkStart
-            }
-            if (totalLen > 0) {
-              targetSequence = yield concat(chunks, totalLen) || targetSequence
-            }
-            chunks.length = 0
-            totalLen = 0
-          }
-          chunkStart = i + 1
-          matchIndex = 0
-        }
-      } else if (matchIndex > 0) {
-        // Partial match failed - check if current byte starts a new match
-        matchIndex = chunk[i] === targetSequence[0] ? 1 : 0
-      }
-    }
-
-    if (chunkStart < chunk.length) {
-      chunks.push(chunk.subarray(chunkStart))
-      totalLen += chunk.length - chunkStart
-    }
-  }
-
-  if (totalLen > 0) yield concat(chunks, totalLen)
-}
+export * from './exceptions.ts'
+export { ConnectionClosedError, ResponseReader } from './reader.ts'
 
 const decoder = new TextDecoder('utf-8')
 function decode (data: Uint8Array) {
@@ -86,7 +34,7 @@ export class NNTP extends EventEmitter {
   nntpVersion?: number
   nntpImplementation?: string
   _cachedoverviewfmt?: string[]
-  byteReader?: AsyncGenerator<Buffer<ArrayBuffer>, void, Uint8Array>
+  reader?: ResponseReader
   connected = false
 
   _connectReadermode = false
@@ -134,7 +82,7 @@ export class NNTP extends EventEmitter {
 
       this.sock = socket ?? this._createSocket(timeout)
       this._attachSocketListeners()
-      this.byteReader = findByteSequence(this.sock, NEW_LINE) // initialize with new line since first requet is always a welcome single line
+      this.reader = new ResponseReader(this.sock)
       this.welcome = decode(await this._getresp())
       this.caps = undefined
       this.connected = true
@@ -166,22 +114,26 @@ export class NNTP extends EventEmitter {
     return net.createConnection({ host: this.host, port: this.port, timeout })
   }
 
-  async _getresp (delimiter = NEW_LINE) {
-    const resp = await this._getline(delimiter)
+  /** After a failed read, the socket can still hold bytes of the response, so the next command must reconnect. */
+  async _read<T> (read: (reader: ResponseReader) => Promise<T>) {
+    try {
+      return await read(this.reader!)
+    } catch (error) {
+      this.connected = false
+      throw error
+    }
+  }
+
+  async _getresp () {
+    const resp = await this._read(reader => reader.readLine())
     if (resp[0] === 52 || resp[0] === 53) { // 4xx, 5xx
       throw new NNTPTemporaryError(decode(resp))
     }
     if (resp[0] !== 49 && resp[0] !== 50 && resp[0] !== 51) { // 1xx, 2xx, 3xx
+      this.connected = false
       throw new NNTPProtocolError(decode(resp))
     }
     return resp
-  }
-
-  async _getline (delimiter = NEW_LINE) {
-    const { value } = await this.byteReader!.next(delimiter)
-    if (value === undefined) throw new Error('End of stream')
-
-    return value
   }
 
   async _putline (line: string) {
@@ -200,7 +152,7 @@ export class NNTP extends EventEmitter {
   }
 
   async _getlongresp () {
-    return { resp: decode(await this._getresp()), data: await this._getline(LONGRESP_END) }
+    return { resp: decode(await this._getresp()), data: await this._read(reader => reader.readMultiline()) }
   }
 
   getwelcome (): string {
@@ -309,8 +261,19 @@ export class NNTP extends EventEmitter {
   async article (messageSpec?: string | number) {
     await this._putline(messageSpec ? `ARTICLE ${messageSpec}` : 'ARTICLE')
     const resp = decode(await this._getresp())
-    const headers = parseHeaders(decode(await this._getline(HEADERS_END)).split('\r\n'))
-    const data = await this._getline(LONGRESP_END) as Uint8Array<ArrayBuffer>
+    const lines = await this._read(reader => reader.readMultiline())
+
+    // An empty line ends the headers. The body comes after it.
+    let headerEnd = lines.indexOf(HEADERS_END)
+    let bodyStart = headerEnd + HEADERS_END.length
+    if (lines[0] === 13 && lines[1] === 10) {
+      headerEnd = 0
+      bodyStart = 2
+    } else if (headerEnd === -1) {
+      headerEnd = bodyStart = lines.length
+    }
+    const headers = parseHeaders(decode(lines.subarray(0, headerEnd)).split('\r\n'))
+    const data = lines.subarray(bodyStart) as Uint8Array<ArrayBuffer>
 
     return { resp, res: new Response(data, { headers }) }
   }
@@ -534,7 +497,7 @@ export class NNTP extends EventEmitter {
 
     this.sock = tls.connect(this._connectTimeout ?? 5000, this.host, { socket: this.sock, secureContext })
     this._attachSocketListeners()
-    this.byteReader = findByteSequence(this.sock, NEW_LINE)
+    this.reader = new ResponseReader(this.sock)
 
     await once(this.sock, 'secureConnect')
 
