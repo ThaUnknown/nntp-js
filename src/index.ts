@@ -42,6 +42,7 @@ export class NNTP extends EventEmitter {
   _tlsContext?: tls.SecureContext
   _loginUser?: string
   _loginPassword?: string
+  _reads = 0
 
   /** Settles when the reply of the last `BODY` command is read. */
   _lastBodyReply: Promise<void> = Promise.resolve()
@@ -116,16 +117,21 @@ export class NNTP extends EventEmitter {
     if (timeout != null && timeout === 0) {
       throw new Error('Non-blocking socket (timeout=0) is not supported')
     }
-    return net.createConnection({ host: this.host, port: this.port, timeout })
+    return net.createConnection({ host: this.host, port: this.port, timeout }).on('timeout', () => {
+      if (this._reads || !this.connected) this.sock?.destroy()
+    })
   }
 
   /** After a failed read, the socket can still hold bytes of the response, so the next command must reconnect. */
   async _read<T> (read: (reader: ResponseReader) => Promise<T>) {
+    this._reads++
     try {
       return await read(this.reader!)
     } catch (error) {
       this.connected = false
       throw error
+    } finally {
+      this._reads--
     }
   }
 
@@ -537,7 +543,7 @@ export class NNTP extends EventEmitter {
     this.connected = false
     this._tlsContext = secureContext
 
-    this.sock = tls.connect(this._connectTimeout ?? 5000, this.host, { socket: this.sock, secureContext })
+    this.sock = tls.connect({ socket: this.sock, host: this.host, secureContext })
     this._attachSocketListeners()
     this.reader = new ResponseReader(this.sock)
 

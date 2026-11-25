@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import net from 'node:net'
 import { Duplex } from 'node:stream'
 import { test } from 'node:test'
 
@@ -174,6 +175,29 @@ test('body does not give data to the 2nd call if the 1st reply is not a valid st
   await first
   await second
   assert.equal(nntp.connected, false)
+})
+
+// A server that stops sending data does not close the connection, so without the timeout the call waits forever.
+test('the timeout closes a connection that waits for a reply, but not an idle connection', async () => {
+  const server = net.createServer(socket => {
+    socket.write(WELCOME)
+    socket.on('data', data => {
+      if (data.toString().startsWith('CAPABILITIES')) socket.write(CAPABILITIES)
+      else if (data.toString().startsWith('BODY <a>')) socket.write('222 1 <a> body\r\nfirst\r\n.\r\n')
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const nntp = new NNTP('127.0.0.1', (server.address() as net.AddressInfo).port)
+  await nntp.connect(false, 50)
+
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(nntp.connected, true)
+  await assert.rejects(nntp.body('<no reply>'))
+  assert.equal(nntp.sock!.destroyed, true)
+  assert.equal(text((await nntp.body('<a>')).data), 'first')
+
+  nntp.sock!.destroy()
+  server.close()
 })
 
 test('body gives each call its own reply for each split point of 2 replies', async () => {
